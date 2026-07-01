@@ -14,7 +14,7 @@ on:
       defconfig:
         description: 'Defconfig name'
         required: true
-        default: 'earth_defconfig'
+        default: 'gale_defconfig'
       zipname:
         description: 'Zip name suffix'
         required: false
@@ -22,7 +22,7 @@ on:
       clang:
         description: 'Clang URL'
         required: false
-        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/a92c8229e4d69f3552cdcd956e3f2b0380a41931/clang-r547379.tar.gz'
+        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz'
       kernelsu_branch:
         description: 'KernelSU branch'
         required: false
@@ -74,7 +74,8 @@ jobs:
           curl -L "${{ github.event.inputs.clang }}" | tar -xz -C clang --strip-components=1
         }
         
-        export PATH=$PWD/clang/bin:$PATH
+        # Mendaftarkan Path Clang secara permanen untuk seluruh step
+        echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
         echo "✓ Clang ready"
 
     - name: Setup KernelSU
@@ -190,7 +191,7 @@ jobs:
       run: |
         export ARCH=arm64
         export KBUILD_BUILD_USER="chizui"
-        export KBUILD_BUILD_HOST="chizui_kernel_build"
+        export KBUILD_BUILD_HOST="chizui_host"
         ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 CONFIG_DEBUG_SECTION_MISMATCH=y"
         
         echo "📋 Defconfig: ${{ github.event.inputs.defconfig }}"
