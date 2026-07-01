@@ -37,12 +37,26 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
+    - name: Checkout Action Repository (Get Local Patch)
+      uses: actions/checkout@v4
+
+    - name: Backup Local Patch
+      run: |
+        echo "📦 Backing up local patch file..."
+        if [ -f "50_add_susfs_in_kernel-4.19.patch" ]; then
+          cp 50_add_susfs_in_kernel-4.19.patch /tmp/
+          echo "✓ Patch file safely copied to /tmp/"
+        else
+          echo "⚠️ Local patch file '50_add_susfs_in_kernel-4.19.patch' not found in repo root!"
+        fi
+
     - name: Checkout Kernel
       uses: actions/checkout@v4
       with:
         repository: ${{ github.event.inputs.repository }}
         ref: ${{ github.event.inputs.branch }}
         submodules: recursive
+        clean: true
 
     - name: Setup Environment
       run: |
@@ -76,37 +90,37 @@ jobs:
         
         echo "✓ KernelSU ready"
 
-    - name: Add Manual Hooks
+    - name: Apply Local SUSFS & Manual Hooks Patch
       run: |
-        echo "📌 Injecting manual hooks"
+        echo "📌 Injecting manual hooks using local patch"
         
         if [ ! -d "KernelSU" ]; then
           echo "⚠️  KernelSU dir not found"
           exit 0
         fi
 
-        # Download and apply a standard KernelSU 4.19 manual hook patch
-        echo "📥 Downloading manual hook patch for 4.19..."
-        wget -qO manual_hook.patch "https://raw.githubusercontent.com/rsuntk/KernelSU-SUSFS-patcher/main/patch/ksu_4_19_manual_hook.patch"
-        
-        echo "🔨 Applying manual hook patch..."
-        
-        if patch -p1 --dry-run < manual_hook.patch >/dev/null 2>&1; then
-          patch -p1 < manual_hook.patch > manual_hook.log 2>&1 || true
-          echo "✓ Patch applied cleanly"
-        else
-          echo "⚠️ Conflicts detected, attempting auto-merge (git apply --reject)..."
-          git apply --reject manual_hook.patch 2>&1 | tee manual_hook.log || true
+        if [ -f "/tmp/50_add_susfs_in_kernel-4.19.patch" ]; then
+          echo "🔨 Applying local patch: 50_add_susfs_in_kernel-4.19.patch..."
           
-          if find . -name "*.rej" -type f | grep -q .; then
-            echo "↪️  Auto-merging rejected hunks..."
-            find . -name "*.rej" -type f | while read rej; do
-              base="${rej%.rej}"
-              grep "^+" "$rej" | sed 's/^+//' >> "$base" 2>/dev/null || true
-            done
-            find . -name "*.rej" -delete
-            echo "✓ Auto-merged (Warning: may cause syntax errors in C files!)"
+          if patch -p1 --dry-run < "/tmp/50_add_susfs_in_kernel-4.19.patch" >/dev/null 2>&1; then
+            patch -p1 < "/tmp/50_add_susfs_in_kernel-4.19.patch" > local_patch.log 2>&1 || true
+            echo "✓ Patch applied cleanly"
+          else
+            echo "⚠️ Conflicts detected, attempting auto-merge (git apply --reject)..."
+            git apply --reject "/tmp/50_add_susfs_in_kernel-4.19.patch" 2>&1 | tee local_patch.log || true
+            
+            if find . -name "*.rej" -type f | grep -q .; then
+              echo "↪️  Auto-merging rejected hunks..."
+              find . -name "*.rej" -type f | while read rej; do
+                base="${rej%.rej}"
+                grep "^+" "$rej" | sed 's/^+//' >> "$base" 2>/dev/null || true
+              done
+              find . -name "*.rej" -delete
+              echo "✓ Auto-merged (Warning: may cause syntax errors in C files!)"
+            fi
           fi
+        else
+          echo "❌ Gagal menemukan patch di /tmp/. Pastikan file ada di repositori kamu."
         fi
         
         # Add to fs/Makefile
@@ -132,20 +146,20 @@ jobs:
           fi
         fi
 
-    - name: Patch SUSFS
+    - name: Patch SUSFS (Official Script)
       if: github.event.inputs.enable_susfs == 'true'
       run: |
-        echo "📦 Patching SUSFS"
+        echo "📦 Fetching & Patching Official SUSFS"
         
         PATCH_URL="https://github.com/ReSukiSU/ReSukiSU/raw/main/kernel/patches/susfs.patch"
         PATCH_FILE="susfs.patch"
         
         if ! wget -q -O "$PATCH_FILE" "$PATCH_URL"; then
-          echo "⚠️  SUSFS patch download failed"
+          echo "⚠️  SUSFS official patch download failed"
           exit 0
         fi
         
-        echo "🔨 Applying patch..."
+        echo "🔨 Applying official SUSFS patch..."
         
         # Try p1
         if patch -p1 --dry-run < "$PATCH_FILE" >/dev/null 2>&1; then
@@ -175,8 +189,8 @@ jobs:
     - name: Prepare Defconfig
       run: |
         export ARCH=arm64
-        export KBUILD_BUILD_USER="kumiko"
-        export KBUILD_BUILD_HOST="kitauji_quartet"
+        export KBUILD_BUILD_USER="chizui"
+        export KBUILD_BUILD_HOST="chizui_kernel_build"
         ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 CONFIG_DEBUG_SECTION_MISMATCH=y"
         
         echo "📋 Defconfig: ${{ github.event.inputs.defconfig }}"
@@ -200,8 +214,8 @@ jobs:
     - name: Compile Kernel
       run: |
         export ARCH=arm64
-        export KBUILD_BUILD_USER="chizui"
-        export KBUILD_BUILD_HOST="chizui_kernel_build"
+        export KBUILD_BUILD_USER="kumiko"
+        export KBUILD_BUILD_HOST="kitauji_quartet"
         ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 CONFIG_DEBUG_SECTION_MISMATCH=y"
         
         echo "🔨 Compiling ($(nproc) threads)..."
