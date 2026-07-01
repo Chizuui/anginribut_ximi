@@ -37,26 +37,12 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout Action Repository (Get Local Patch)
-      uses: actions/checkout@v4
-
-    - name: Backup Local Patch
-      run: |
-        echo "📦 Backing up local patch file..."
-        if [ -f "50_add_susfs_in_kernel-4.19.patch" ]; then
-          cp 50_add_susfs_in_kernel-4.19.patch /tmp/
-          echo "✓ Patch file safely copied to /tmp/"
-        else
-          echo "⚠️ Local patch file '50_add_susfs_in_kernel-4.19.patch' not found in repo root!"
-        fi
-
     - name: Checkout Kernel
       uses: actions/checkout@v4
       with:
         repository: ${{ github.event.inputs.repository }}
         ref: ${{ github.event.inputs.branch }}
         submodules: recursive
-        clean: true
 
     - name: Setup Environment
       run: |
@@ -74,8 +60,6 @@ jobs:
           curl -L "${{ github.event.inputs.clang }}" | tar -xz -C clang --strip-components=1
         }
         
-        # Mendaftarkan Path Clang secara permanen untuk seluruh step
-        echo "$GITHUB_WORKSPACE/clang/bin" >> $GITHUB_PATH
         echo "✓ Clang ready"
 
     - name: Setup KernelSU
@@ -93,22 +77,26 @@ jobs:
 
     - name: Apply Local SUSFS & Manual Hooks Patch
       run: |
-        echo "📌 Injecting manual hooks using local patch"
+        echo "📌 Injecting SUSFS and manual hooks using your repository patch"
         
         if [ ! -d "KernelSU" ]; then
           echo "⚠️  KernelSU dir not found"
           exit 0
         fi
 
-        if [ -f "/tmp/50_add_susfs_in_kernel-4.19.patch" ]; then
-          echo "🔨 Applying local patch: 50_add_susfs_in_kernel-4.19.patch..."
+        # Langsung download patch dari raw GitHub repo Chizuui/anginribut_ximi
+        echo "📥 Fetching patch from Chizuui/anginribut_ximi..."
+        wget -qO manual_hook.patch "https://raw.githubusercontent.com/Chizuui/anginribut_ximi/main/50_add_susfs_in_kernel-4.19.patch" || true
+
+        if [ -s manual_hook.patch ]; then
+          echo "🔨 Applying your patch: 50_add_susfs_in_kernel-4.19.patch..."
           
-          if patch -p1 --dry-run < "/tmp/50_add_susfs_in_kernel-4.19.patch" >/dev/null 2>&1; then
-            patch -p1 < "/tmp/50_add_susfs_in_kernel-4.19.patch" > local_patch.log 2>&1 || true
+          if patch -p1 --dry-run < manual_hook.patch >/dev/null 2>&1; then
+            patch -p1 < manual_hook.patch > local_patch.log 2>&1 || true
             echo "✓ Patch applied cleanly"
           else
             echo "⚠️ Conflicts detected, attempting auto-merge (git apply --reject)..."
-            git apply --reject "/tmp/50_add_susfs_in_kernel-4.19.patch" 2>&1 | tee local_patch.log || true
+            git apply --reject manual_hook.patch 2>&1 | tee local_patch.log || true
             
             if find . -name "*.rej" -type f | grep -q .; then
               echo "↪️  Auto-merging rejected hunks..."
@@ -121,7 +109,7 @@ jobs:
             fi
           fi
         else
-          echo "❌ Gagal menemukan patch di /tmp/. Pastikan file ada di repositori kamu."
+          echo "❌ Gagal mengunduh patch. Pastikan repo bersifat publik dan link raw dapat diakses."
         fi
         
         # Add to fs/Makefile
@@ -147,48 +135,10 @@ jobs:
           fi
         fi
 
-    - name: Patch SUSFS (Official Script)
-      if: github.event.inputs.enable_susfs == 'true'
-      run: |
-        echo "📦 Fetching & Patching Official SUSFS"
-        
-        PATCH_URL="https://github.com/ReSukiSU/ReSukiSU/raw/main/kernel/patches/susfs.patch"
-        PATCH_FILE="susfs.patch"
-        
-        if ! wget -q -O "$PATCH_FILE" "$PATCH_URL"; then
-          echo "⚠️  SUSFS official patch download failed"
-          exit 0
-        fi
-        
-        echo "🔨 Applying official SUSFS patch..."
-        
-        # Try p1
-        if patch -p1 --dry-run < "$PATCH_FILE" >/dev/null 2>&1; then
-          patch -p1 < "$PATCH_FILE" > susfs.log 2>&1 || true
-          echo "✓ Patch applied (p1)"
-        else
-          # Try p0
-          if patch -p0 --dry-run < "$PATCH_FILE" >/dev/null 2>&1; then
-            patch -p0 < "$PATCH_FILE" > susfs.log 2>&1 || true
-            echo "✓ Patch applied (p0)"
-          else
-            # Git apply + auto-merge
-            git apply --reject "$PATCH_FILE" 2>&1 | tee susfs.log || true
-            
-            if find . -name "*.rej" -type f | grep -q .; then
-              echo "↪️  Auto-merging rejected hunks..."
-              find . -name "*.rej" -type f | while read rej; do
-                base="${rej%.rej}"
-                grep "^+" "$rej" | sed 's/^+//' >> "$base" 2>/dev/null || true
-              done
-              find . -name "*.rej" -delete
-              echo "✓ Auto-merged"
-            fi
-          fi
-        fi
-
     - name: Prepare Defconfig
       run: |
+        # Set PATH secara eksplisit di sini agar ld.lld pasti terbaca
+        export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
         export ARCH=arm64
         export KBUILD_BUILD_USER="chizui"
         export KBUILD_BUILD_HOST="chizui_host"
@@ -214,6 +164,8 @@ jobs:
 
     - name: Compile Kernel
       run: |
+        # Set PATH secara eksplisit di sini agar ld.lld pasti terbaca
+        export PATH=$GITHUB_WORKSPACE/clang/bin:$PATH
         export ARCH=arm64
         export KBUILD_BUILD_USER="kumiko"
         export KBUILD_BUILD_HOST="kitauji_quartet"
