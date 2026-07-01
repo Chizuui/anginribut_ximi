@@ -112,13 +112,11 @@ jobs:
         # Add to fs/Makefile
         if [ -f "fs/Makefile" ]; then
           if ! grep -q "CONFIG_KSU_MANUAL_HOOK" fs/Makefile; then
-            cat >> fs/Makefile << 'EOF'
-
-# ReSukiSU Manual Hook
-ifdef CONFIG_KSU_MANUAL_HOOK
-obj-y += ksu/
-endif
-EOF
+            echo "" >> fs/Makefile
+            echo "# ReSukiSU Manual Hook" >> fs/Makefile
+            echo "ifdef CONFIG_KSU_MANUAL_HOOK" >> fs/Makefile
+            echo "obj-y += ksu/" >> fs/Makefile
+            echo "endif" >> fs/Makefile
             echo "✓ Added to fs/Makefile"
           fi
         fi
@@ -126,12 +124,10 @@ EOF
         # Add to init/main.c
         if [ -f "init/main.c" ]; then
           if ! grep -q "CONFIG_KSU_MANUAL_HOOK" init/main.c; then
-            cat >> init/main.c << 'EOF'
-
-#ifdef CONFIG_KSU_MANUAL_HOOK
-extern void ksu_init(void);
-#endif
-EOF
+            echo "" >> init/main.c
+            echo "#ifdef CONFIG_KSU_MANUAL_HOOK" >> init/main.c
+            echo "extern void ksu_init(void);" >> init/main.c
+            echo "#endif" >> init/main.c
             echo "✓ Added to init/main.c"
           fi
         fi
@@ -179,26 +175,22 @@ EOF
     - name: Prepare Defconfig
       run: |
         export ARCH=arm64
-        export KBUILD_BUILD_USER="chizui"
-        export KBUILD_BUILD_HOST="chizui_kernel_build"
+        export KBUILD_BUILD_USER="kumiko"
+        export KBUILD_BUILD_HOST="kitauji_quartet"
         ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 CONFIG_DEBUG_SECTION_MISMATCH=y"
         
         echo "📋 Defconfig: ${{ github.event.inputs.defconfig }}"
         make $ARGS ${{ github.event.inputs.defconfig }} 2>&1 | tee defconfig.log
         
-        # Inject KSU + SUSFS configs
-        cat >> out/.config << 'EOF'
-CONFIG_KSU=y
-CONFIG_KSU_MANUAL_HOOK=y
-CONFIG_KSU_DEBUG=y
-EOF
+        # Inject KSU + SUSFS configs using echo to avoid YAML indentation errors
+        echo "CONFIG_KSU=y" >> out/.config
+        echo "CONFIG_KSU_MANUAL_HOOK=y" >> out/.config
+        echo "CONFIG_KSU_DEBUG=y" >> out/.config
         
         if [ "${{ github.event.inputs.enable_susfs }}" = "true" ]; then
-          cat >> out/.config << 'EOF'
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-EOF
+          echo "CONFIG_KSU_SUSFS=y" >> out/.config
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> out/.config
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> out/.config
         fi
         
         # Sync config
@@ -208,8 +200,8 @@ EOF
     - name: Compile Kernel
       run: |
         export ARCH=arm64
-        export KBUILD_BUILD_USER="kumiko"
-        export KBUILD_BUILD_HOST="kitauji_quartet"
+        export KBUILD_BUILD_USER="chizui"
+        export KBUILD_BUILD_HOST="chizui_kernel_build"
         ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 CONFIG_DEBUG_SECTION_MISMATCH=y"
         
         echo "🔨 Compiling ($(nproc) threads)..."
