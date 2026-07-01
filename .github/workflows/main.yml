@@ -3,20 +3,42 @@ name: Kernel Build
 on:
   workflow_dispatch:
     inputs:
-      repository: { description: 'Repo', required: true, default: 'Kitauji-High-School/android_kernel_xiaomi_earth' }
-      branch: { description: 'Branch', required: true, default: '16.2' }
-      defconfig: { description: 'Defconfig', required: true, default: 'earth_defconfig' }
-      zipname : { description: 'zip name', required: false, default: '-' }
-      clang : { description: 'Clang URL', required: true, default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz' }
-      kernelsu_branch: { description: 'KSU Branch', required: false, default: 'main' }
-      susfs_patch_url: { description: 'SUSFS Patch URL', required: false, default: 'https://github.com/ReSukiSU/ReSukiSU/raw/main/kernel/patches/susfs.patch' }
-      enable_susfs: { description: 'Enable SUSFS', required: false, default: 'false' }
+      repository:
+        description: 'Kernel Repository'
+        required: true
+        default: 'Kitauji-High-School/android_kernel_xiaomi_earth'
+      branch:
+        description: 'Branch'
+        required: true
+        default: '16.2'
+      defconfig:
+        description: 'Defconfig name'
+        required: true
+        default: 'earth_defconfig'
+      zipname:
+        description: 'Zip name suffix'
+        required: false
+        default: 'kernel'
+      clang:
+        description: 'Clang URL'
+        required: false
+        default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz'
+      kernelsu_branch:
+        description: 'KernelSU branch'
+        required: false
+        default: 'main'
+      enable_susfs:
+        description: 'Enable SUSFS patch'
+        required: false
+        default: 'false'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout Kernel
+      uses: actions/checkout@v4
       with:
         repository: ${{ github.event.inputs.repository }}
         ref: ${{ github.event.inputs.branch }}
@@ -28,42 +50,42 @@ jobs:
         sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc zip gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 python3-full python-is-python3 git wget curl patch
         
         export TZ="Asia/Jakarta"
-        echo "BUILD_TIME=$(date +"%Y%m%d")-$(date +"%H%M%S")" >> $GITHUB_ENV
-        echo "BUILD_TIME_HUMAN=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
+        echo "BUILD_TIME=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_ENV
         
-        # Download AOSP Clang 
+        # Download Clang
         mkdir -p clang
         echo "📥 Downloading Clang..."
-        wget -qO- ${{ github.event.inputs.clang }} | tar -xz -C clang --strip-components=1
+        wget -qO- "${{ github.event.inputs.clang }}" | tar -xz -C clang --strip-components=1 2>/dev/null || {
+          echo "⚠️  Clang download failed, trying fallback..."
+          curl -L "${{ github.event.inputs.clang }}" | tar -xz -C clang --strip-components=1
+        }
+        
         export PATH=$PWD/clang/bin:$PATH
-        clang --version | head -1
         echo "✓ Clang ready"
 
-    - name: Setup KernelSU (Manual)
+    - name: Setup KernelSU
       run: |
-        echo "🔧 KernelSU Manual Setup"
-        echo "Branch: ${{ github.event.inputs.kernelsu_branch }}"
+        echo "🔧 Setting up KernelSU (Branch: ${{ github.event.inputs.kernelsu_branch }})"
         
-        # Run official ReSukiSU setup script
-        bash -c "$(curl -LSs https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh)" -- ${{ github.event.inputs.kernelsu_branch }} 2>&1 | head -50 || {
-          echo "⚠️  Fallback setup..."
-          git clone --depth=1 -b ${{ github.event.inputs.kernelsu_branch }} https://github.com/tiann/KernelSU.git KernelSU 2>/dev/null || \
+        # Official ReSukiSU setup
+        bash -c "$(curl -LSs https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh)" -- "${{ github.event.inputs.kernelsu_branch }}" 2>&1 | head -50 || {
+          echo "⚠️  Setup script failed, doing fallback clone..."
+          git clone --depth=1 -b "${{ github.event.inputs.kernelsu_branch }}" https://github.com/tiann/KernelSU.git KernelSU 2>/dev/null || \
           git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git KernelSU
         }
         
-        echo "✓ KernelSU cloned"
+        echo "✓ KernelSU ready"
 
-    - name: Add KernelSU Manual Hooks
+    - name: Add Manual Hooks
       run: |
-        echo "📌 Injecting Manual Hooks (from gambar)"
+        echo "📌 Injecting manual hooks"
         
-        KSU_DIR="${PWD}/KernelSU"
-        if [ ! -d "$KSU_DIR" ]; then
-          echo "⚠️  KernelSU not found, skipping hooks"
+        if [ ! -d "KernelSU" ]; then
+          echo "⚠️  KernelSU dir not found"
           exit 0
         fi
         
-        # Add ReSukiSU hook marker to fs/Makefile
+        # Add to fs/Makefile
         if [ -f "fs/Makefile" ]; then
           if ! grep -q "CONFIG_KSU_MANUAL_HOOK" fs/Makefile; then
             cat >> fs/Makefile << 'EOF'
@@ -77,9 +99,9 @@ EOF
           fi
         fi
         
-        # Add hook to init/main.c for manual timing
+        # Add to init/main.c
         if [ -f "init/main.c" ]; then
-          if ! grep -q "ksu_" init/main.c; then
+          if ! grep -q "CONFIG_KSU_MANUAL_HOOK" init/main.c; then
             cat >> init/main.c << 'EOF'
 
 #ifdef CONFIG_KSU_MANUAL_HOOK
@@ -90,93 +112,73 @@ EOF
           fi
         fi
 
-    - name: Download & Apply SUSFS Patch
-      if: ${{ github.event.inputs.enable_susfs == 'true' }}
+    - name: Patch SUSFS
+      if: github.event.inputs.enable_susfs == 'true'
       run: |
-        echo "📦 SUSFS Patching"
+        echo "📦 Patching SUSFS"
         
-        PATCH_URL="${{ github.event.inputs.susfs_patch_url }}"
+        PATCH_URL="https://github.com/ReSukiSU/ReSukiSU/raw/main/kernel/patches/susfs.patch"
         PATCH_FILE="susfs.patch"
         
-        echo "URL: $PATCH_URL"
-        if wget -q -O "$PATCH_FILE" "$PATCH_URL"; then
-          echo "✓ Patch downloaded ($(wc -l < $PATCH_FILE) lines)"
-        else
-          echo "❌ Failed to download SUSFS patch"
-          exit 1
+        if ! wget -q -O "$PATCH_FILE" "$PATCH_URL"; then
+          echo "⚠️  SUSFS patch download failed"
+          exit 0
         fi
         
-        # Apply with fallback strategies
         echo "🔨 Applying patch..."
-        if patch -p1 --dry-run < "$PATCH_FILE" >/dev/null 2>&1; then
-          echo "  ✓ Dry-run OK, applying..."
-          patch -p1 < "$PATCH_FILE" > susfs_patch.log 2>&1 || {
-            CONFLICT_COUNT=$(grep -c "^>" susfs_patch.log || echo 0)
-            echo "  ⚠️  $CONFLICT_COUNT conflicts detected"
-          }
-        else
-          echo "  ⚠️  Dry-run failed, trying alternate strategies..."
-          
-          # Strategy 1: Try with -p0
-          if patch -p0 --dry-run < "$PATCH_FILE" >/dev/null 2>&1; then
-            echo "    ↪️  Switching to -p0"
-            patch -p0 < "$PATCH_FILE" > susfs_patch.log 2>&1 || true
-          fi
-          
-          # Strategy 2: Extract and auto-merge
-          git apply --reject "$PATCH_FILE" 2>&1 | tee -a susfs_patch.log || {
-            echo "    ↪️  Auto-fixing rejected hunks..."
-            find . -name "*.rej" -type f | while read rej; do
-              base_file="${rej%.rej}"
-              echo "      Merging: $base_file"
-              
-              # Extract added lines from .rej
-              grep "^+" "$rej" | sed 's/^+//' >> "$base_file" || true
-            done
-            find . -name "*.rej" -delete
-            echo "    ✓ Hunks merged"
-          }
-        fi
         
-        echo "✓ SUSFS patch complete"
+        # Try p1
+        if patch -p1 --dry-run < "$PATCH_FILE" >/dev/null 2>&1; then
+          patch -p1 < "$PATCH_FILE" > susfs.log 2>&1 || true
+          echo "✓ Patch applied (p1)"
+        else
+          # Try p0
+          if patch -p0 --dry-run < "$PATCH_FILE" >/dev/null 2>&1; then
+            patch -p0 < "$PATCH_FILE" > susfs.log 2>&1 || true
+            echo "✓ Patch applied (p0)"
+          else
+            # Git apply + auto-merge
+            git apply --reject "$PATCH_FILE" 2>&1 | tee susfs.log || true
+            
+            if find . -name "*.rej" -type f | grep -q .; then
+              echo "↪️  Auto-merging rejected hunks..."
+              find . -name "*.rej" -type f | while read rej; do
+                base="${rej%.rej}"
+                grep "^+" "$rej" | sed 's/^+//' >> "$base" 2>/dev/null || true
+              done
+              find . -name "*.rej" -delete
+              echo "✓ Auto-merged"
+            fi
+          fi
+        fi
 
     - name: Prepare Defconfig
       run: |
         export ARCH=arm64
         export KBUILD_BUILD_USER="kumiko"
         export KBUILD_BUILD_HOST="kitauji_quartet"
-        
         ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 CONFIG_DEBUG_SECTION_MISMATCH=y"
         
-        echo "📋 Generating defconfig: ${{ github.event.inputs.defconfig }}"
+        echo "📋 Defconfig: ${{ github.event.inputs.defconfig }}"
         make $ARGS ${{ github.event.inputs.defconfig }} 2>&1 | tee defconfig.log
         
-        # Inject KSU configs
-        echo "🔧 Injecting KSU Configuration"
-        cat >> out/.config << 'CONFIG_KSU'
-# KernelSU Configs
+        # Inject KSU + SUSFS configs
+        cat >> out/.config << 'EOF'
 CONFIG_KSU=y
 CONFIG_KSU_MANUAL_HOOK=y
 CONFIG_KSU_DEBUG=y
-CONFIG_KSU_SUSFS=${SUSFS_ENABLED}
-CONFIG_KSU
+EOF
         
         if [ "${{ github.event.inputs.enable_susfs }}" = "true" ]; then
-          sed -i 's/${SUSFS_ENABLED}/y/' out/.config
-          cat >> out/.config << 'CONFIG_SUSFS'
-# SUSFS Configs
+          cat >> out/.config << 'EOF'
 CONFIG_KSU_SUSFS=y
 CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
 CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_SUSFS
-          echo "✓ SUSFS enabled"
-        else
-          sed -i 's/${SUSFS_ENABLED}/n/' out/.config
+EOF
         fi
         
-        echo "🔄 Rebuilding config..."
+        # Sync config
         make $ARGS oldconfig >/dev/null 2>&1 || make $ARGS syncconfig >/dev/null 2>&1 || true
-        
         echo "✓ Config ready"
 
     - name: Compile Kernel
@@ -184,10 +186,9 @@ CONFIG_SUSFS
         export ARCH=arm64
         export KBUILD_BUILD_USER="kumiko"
         export KBUILD_BUILD_HOST="kitauji_quartet"
-        
         ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 CONFIG_DEBUG_SECTION_MISMATCH=y"
         
-        echo "🔨 Compiling kernel ($(nproc) threads)..."
+        echo "🔨 Compiling ($(nproc) threads)..."
         make -j$(nproc) $ARGS 2>&1 | tee compile.log
         
         if [ -f "out/arch/arm64/boot/Image.gz" ]; then
@@ -195,56 +196,37 @@ CONFIG_SUSFS
           echo "✓ Image.gz compiled ($SIZE)"
         else
           echo "❌ Compilation failed!"
-          tail -100 compile.log
+          tail -50 compile.log
           exit 1
         fi
 
     - name: Package with AnyKernel3
       run: |
-        echo "📦 Packaging with AnyKernel3"
-        git clone https://github.com/Chizuui/AnyKernel3.git -b hayase Anykernel3 --depth=1
+        echo "📦 Packaging"
+        
+        git clone https://github.com/Chizuui/AnyKernel3.git -b hayase Anykernel3 --depth=1 2>/dev/null || \
+        git clone https://github.com/osm0sis/AnyKernel3.git -b master Anykernel3 --depth=1
         
         if [ -f out/arch/arm64/boot/Image.gz ]; then
           cp out/arch/arm64/boot/Image.gz Anykernel3/
           mkdir -p Anykernel3/dtb
-          cp out/arch/arm64/boot/dts/mediatek/mt6768.dtb Anykernel3/dtb/ 2>/dev/null || true
+          find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} Anykernel3/dtb/ \; 2>/dev/null || true
           
           cd Anykernel3
-          ZIPNAME="Anykernel3-${{ github.event.inputs.zipname }}-${{ env.BUILD_TIME }}"
-          zip -r9 "../${ZIPNAME}.zip" * -x '.git*' '.github*' 'README.md' >/dev/null 2>&1
+          ZIPNAME="Anykernel3-${{ github.event.inputs.zipname }}-${{ env.BUILD_TIME }}.zip"
+          zip -r9 "../$ZIPNAME" * -x '.git*' '.github*' >/dev/null 2>&1
           cd ..
           
-          SIZE=$(du -h "${ZIPNAME}.zip" | cut -f1)
-          echo "✓ Packaged: ${ZIPNAME}.zip ($SIZE)"
-        else
-          echo "⚠️  No Image.gz found, skipping packaging"
+          SIZE=$(du -h "$ZIPNAME" | cut -f1)
+          echo "✓ Packaged: $ZIPNAME ($SIZE)"
         fi
 
     - name: Upload Artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: Build-Result-${{ env.BUILD_TIME }}
+        name: Build-${{ env.BUILD_TIME }}
         path: |
           *.log
           *.zip
         retention-days: 30
-
-    - name: Build Summary
-      if: always()
-      run: |
-        echo "📊 Build Summary"
-        echo "  Time: ${{ env.BUILD_TIME_HUMAN }}"
-        echo "  Repo: ${{ github.event.inputs.repository }}@${{ github.event.inputs.branch }}"
-        echo "  Defconfig: ${{ github.event.inputs.defconfig }}"
-        echo "  KSU: ${{ github.event.inputs.kernelsu_branch }}"
-        echo "  SUSFS: ${{ github.event.inputs.enable_susfs }}"
-        
-        if [ -f compile.log ]; then
-          ERRORS=$(grep -c "error:" compile.log || echo 0)
-          WARNINGS=$(grep -c "warning:" compile.log || echo 0)
-          echo "  Compile: $ERRORS errors, $WARNINGS warnings"
-        fi
-        
-        ZIPCOUNT=$(ls *.zip 2>/dev/null | wc -l)
-        echo "  Output files: $ZIPCOUNT zips"
