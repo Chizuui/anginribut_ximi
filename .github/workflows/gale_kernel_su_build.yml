@@ -60,8 +60,8 @@ jobs:
       # AnyKernel3
       # ============================================================
       ANYKERNEL_DIR: ${{ github.workspace }}/AnyKernel3
-      ANYKERNEL_REPO: vannkyle/AnyKernel3
-      ANYKERNEL_BRANCH: hayase
+      ANYKERNEL_REPO: Chizuui/AnyKernel3
+      ANYKERNEL_BRANCH: priestess
 
       # ============================================================
       # Build Identity
