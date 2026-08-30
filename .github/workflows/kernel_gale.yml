@@ -1,0 +1,757 @@
+name: Build Gale Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: "Kernel repository (owner/repo)"
+        required: true
+        default: "Chizuui/kernel_xiaomi_gale"
+        type: string
+
+      branch:
+        description: "Kernel branch"
+        required: true
+        default: "dev/a17-bringup"
+        type: string
+
+      defconfig:
+        description: "Kernel defconfig"
+        required: true
+        default: "gale_defconfig"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Kernel
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      # ============================================================
+      # Kernel
+      # ============================================================
+      KERNEL_DIR: ${{ github.workspace }}/kernel
+      OUT_DIR: ${{ github.workspace }}/kernel/out
+
+      SOURCE_REPOSITORY: ${{ inputs.repository }}
+      SOURCE_BRANCH: ${{ inputs.branch }}
+
+      CONFIG_NAME: ${{ inputs.defconfig }}
+      DEVICE_CODENAME: gale
+
+      # ============================================================
+      # Toolchain
+      # ============================================================
+      CLANG_DIR: ${{ github.workspace }}/aosp-20
+
+      # ============================================================
+      # AnyKernel
+      # ============================================================
+      ANYKERNEL_DIR: ${{ github.workspace }}/AnyKernel3
+      ANYKERNEL_REPO: vannkyle/AnyKernel3
+      ANYKERNEL_BRANCH: hayase
+
+      # ============================================================
+      # Build Identity
+      # ============================================================
+      KBUILD_BUILD_USER: chizuir
+      KBUILD_BUILD_HOST: chizz
+
+    steps:
+      # ============================================================
+      # Checkout selected kernel repository
+      # ============================================================
+
+      - name: Checkout Kernel
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.branch }}
+          path: kernel
+          fetch-depth: 1
+
+      # ============================================================
+      # Source information
+      # ============================================================
+
+      - name: Get Source Information
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_SHA=$(git -C "$KERNEL_DIR" rev-parse HEAD)
+          SOURCE_SHORT_SHA=$(git -C "$KERNEL_DIR" rev-parse --short=8 HEAD)
+
+          SAFE_BRANCH=$(echo "$SOURCE_BRANCH" \
+            | sed 's#[^A-Za-z0-9._-]#-#g')
+
+          SAFE_REPO=$(echo "$SOURCE_REPOSITORY" \
+            | sed 's#[^A-Za-z0-9._-]#-#g')
+
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SOURCE_SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "safe_branch=$SAFE_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "safe_repo=$SAFE_REPO" >> "$GITHUB_OUTPUT"
+
+          echo "=============================================="
+          echo "               SOURCE INFO"
+          echo "=============================================="
+          echo "Repository : $SOURCE_REPOSITORY"
+          echo "Branch     : $SOURCE_BRANCH"
+          echo "Commit     : $SOURCE_SHA"
+          echo "Defconfig  : $CONFIG_NAME"
+          echo "=============================================="
+
+      # ============================================================
+      # Dependencies
+      # ============================================================
+
+      - name: Install Build Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            curl \
+            dwarves \
+            flex \
+            git \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            python3 \
+            rsync \
+            unzip \
+            xz-utils \
+            zip \
+            zstd \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            binutils-aarch64-linux-gnu \
+            binutils-arm-linux-gnueabi
+
+      # ============================================================
+      # ccache
+      # ============================================================
+
+      - name: Restore ccache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ccache
+
+          key: >-
+            kernel-ccache-r547379-${{
+            runner.os }}-${{
+            steps.source.outputs.safe_repo }}-${{
+            steps.source.outputs.safe_branch }}-${{
+            steps.source.outputs.sha }}
+
+          restore-keys: |
+            kernel-ccache-r547379-${{ runner.os }}-${{ steps.source.outputs.safe_repo }}-${{ steps.source.outputs.safe_branch }}-
+            kernel-ccache-r547379-${{ runner.os }}-${{ steps.source.outputs.safe_repo }}-
+            kernel-ccache-r547379-${{ runner.os }}-
+
+      - name: Configure ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ccache --set-config=max_size=5G
+          ccache --set-config=compression=true
+          ccache --zero-stats
+
+          echo "CCACHE DIRECTORY:"
+          ccache --show-config
+
+      # ============================================================
+      # AOSP Clang 20 r547379
+      # ============================================================
+
+      - name: Download AOSP Clang 20
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=============================================="
+          echo "      Downloading AOSP Clang r547379"
+          echo "=============================================="
+
+          rm -rf "$CLANG_DIR"
+          mkdir -p "$CLANG_DIR"
+
+          TOOLCHAIN_ARCHIVE="/tmp/aosp-clang-r547379.tar.gz"
+
+          AOSP_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/llvm-r547379-release/clang-r547379.tar.gz"
+
+          echo "Trying official Android source..."
+
+          if curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-delay 5 \
+            --output "$TOOLCHAIN_ARCHIVE" \
+            "$AOSP_URL"; then
+
+              echo "Official AOSP download successful."
+
+              tar -xzf \
+                "$TOOLCHAIN_ARCHIVE" \
+                -C "$CLANG_DIR"
+
+          else
+
+              echo "::warning::Official AOSP archive download failed."
+              echo "Using AOSP GitHub mirror fallback..."
+
+              rm -rf \
+                "$CLANG_DIR" \
+                "$GITHUB_WORKSPACE/aosp-clang-mirror"
+
+              git clone \
+                --depth=1 \
+                --filter=blob:none \
+                --sparse \
+                https://github.com/msft-mirror-aosp/platform.prebuilts.clang.host.linux-x86.git \
+                "$GITHUB_WORKSPACE/aosp-clang-mirror"
+
+              git \
+                -C "$GITHUB_WORKSPACE/aosp-clang-mirror" \
+                sparse-checkout set \
+                clang-r547379
+
+              mv \
+                "$GITHUB_WORKSPACE/aosp-clang-mirror/clang-r547379" \
+                "$CLANG_DIR"
+
+          fi
+
+          rm -f "$TOOLCHAIN_ARCHIVE"
+
+          if [ ! -x "$CLANG_DIR/bin/clang" ]; then
+            echo "::error::clang binary was not found!"
+            exit 1
+          fi
+
+          echo "$CLANG_DIR/bin" >> "$GITHUB_PATH"
+
+          echo ""
+          echo "Toolchain installed:"
+          echo "$CLANG_DIR"
+
+      # ============================================================
+      # Verify compiler
+      # ============================================================
+
+      - name: Verify Toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+
+          echo "=============================================="
+          echo "                CLANG INFO"
+          echo "=============================================="
+
+          clang --version
+
+          echo ""
+          echo "=============================================="
+          echo "                 LLD INFO"
+          echo "=============================================="
+
+          ld.lld --version
+
+          echo ""
+          echo "=============================================="
+
+      # ============================================================
+      # AnyKernel3
+      # ============================================================
+
+      - name: Clone AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$ANYKERNEL_DIR"
+
+          git clone \
+            --depth=1 \
+            --branch "$ANYKERNEL_BRANCH" \
+            "https://github.com/$ANYKERNEL_REPO.git" \
+            "$ANYKERNEL_DIR"
+
+          echo ""
+          echo "AnyKernel3:"
+          git -C "$ANYKERNEL_DIR" log -1 --oneline
+
+      # ============================================================
+      # Clean output
+      # ============================================================
+
+      - name: Prepare Output Directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+
+      # ============================================================
+      # Defconfig
+      # ============================================================
+
+      - name: Generate Defconfig
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+
+          echo "=============================================="
+          echo "          GENERATING DEFCONFIG"
+          echo "=============================================="
+          echo "Defconfig: $CONFIG_NAME"
+          echo "=============================================="
+
+          make \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC=clang \
+            LD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            "$CONFIG_NAME"
+
+      # ============================================================
+      # Record build start
+      # ============================================================
+
+      - name: Start Build Timer
+        id: timer
+        shell: bash
+        run: |
+          echo "start=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # ============================================================
+      # Compile
+      # ============================================================
+
+      - name: Compile Kernel
+        working-directory: kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+
+          echo "=============================================="
+          echo "             COMPILING KERNEL"
+          echo "=============================================="
+          echo "Repository : $SOURCE_REPOSITORY"
+          echo "Branch     : $SOURCE_BRANCH"
+          echo "Defconfig  : $CONFIG_NAME"
+          echo "Threads    : $(nproc)"
+          echo "=============================================="
+
+          make \
+            -j"$(nproc)" \
+            O="$OUT_DIR" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CC="ccache clang" \
+            LD=ld.lld \
+            AR=llvm-ar \
+            NM=llvm-nm \
+            STRIP=llvm-strip \
+            OBJCOPY=llvm-objcopy \
+            OBJDUMP=llvm-objdump \
+            READELF=llvm-readelf \
+            HOSTCC="ccache clang" \
+            HOSTCXX="ccache clang++" \
+            HOSTAR=llvm-ar \
+            HOSTLD=ld.lld \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            2>&1 | tee "$OUT_DIR/compile.log"
+
+      # ============================================================
+      # ccache statistics
+      # ============================================================
+
+      - name: Show ccache Statistics
+        if: always()
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo "              CCACHE STATS"
+          echo "=============================================="
+
+          ccache --show-stats || true
+
+      # ============================================================
+      # Package AnyKernel
+      # ============================================================
+
+      - name: Package AnyKernel3
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+
+          echo "=============================================="
+          echo "           PACKAGING ANYKERNEL"
+          echo "=============================================="
+
+          DEFCONFIG_FILE="$KERNEL_DIR/arch/arm64/configs/$CONFIG_NAME"
+
+          # --------------------------------------------------------
+          # Kernel name
+          # --------------------------------------------------------
+
+          RAW_LOCALVERSION=$(
+            grep -oP \
+              'CONFIG_LOCALVERSION="\K[^"]+' \
+              "$DEFCONFIG_FILE" \
+              || true
+          )
+
+          KERNEL_NAME=$(
+            echo "$RAW_LOCALVERSION" \
+            | sed 's/^-//'
+          )
+
+          if [ -z "$KERNEL_NAME" ]; then
+            KERNEL_NAME="CustomKernel"
+          fi
+
+          # --------------------------------------------------------
+          # Find Image.gz
+          # --------------------------------------------------------
+
+          KERNEL_IMAGE=$(
+            find "$OUT_DIR" \
+              -type f \
+              -name "Image.gz" \
+              | head -n1
+          )
+
+          # --------------------------------------------------------
+          # Find mt6768.dtb
+          # --------------------------------------------------------
+
+          DTB_FILE=$(
+            find "$OUT_DIR" \
+              -type f \
+              -name "mt6768.dtb" \
+              | head -n1
+          )
+
+          echo ""
+          echo "Kernel Name : $KERNEL_NAME"
+          echo "Image.gz    : $KERNEL_IMAGE"
+          echo "DTB         : $DTB_FILE"
+
+          # --------------------------------------------------------
+          # Check Image
+          # --------------------------------------------------------
+
+          if [ -z "$KERNEL_IMAGE" ] || [ ! -f "$KERNEL_IMAGE" ]; then
+            echo "::error::Image.gz was not found!"
+            exit 1
+          fi
+
+          # --------------------------------------------------------
+          # Check DTB
+          # --------------------------------------------------------
+
+          if [ -z "$DTB_FILE" ] || [ ! -f "$DTB_FILE" ]; then
+            echo "::error::mt6768.dtb was not found!"
+            exit 1
+          fi
+
+          # --------------------------------------------------------
+          # Copy to AnyKernel
+          # --------------------------------------------------------
+
+          cp \
+            "$KERNEL_IMAGE" \
+            "$ANYKERNEL_DIR/Image.gz"
+
+          cp \
+            "$DTB_FILE" \
+            "$ANYKERNEL_DIR/dtb"
+
+          # --------------------------------------------------------
+          # ZIP name
+          # --------------------------------------------------------
+
+          BUILD_DATE=$(date -u +%Y%m%d-%H%M)
+
+          ZIP_NAME="${KERNEL_NAME}-${BUILD_DATE}.zip"
+
+          ZIP_PATH="$GITHUB_WORKSPACE/$ZIP_NAME"
+
+          # --------------------------------------------------------
+          # Build AnyKernel ZIP
+          # --------------------------------------------------------
+
+          cd "$ANYKERNEL_DIR"
+
+          zip \
+            -r9 \
+            "$ZIP_PATH" \
+            . \
+            -x ".git/*" \
+            -x ".git" \
+            -x "builds/*" \
+            -x "builds" \
+            -x "*.zip" \
+            -x "*/*.zip" \
+            > /dev/null
+
+          cd "$GITHUB_WORKSPACE"
+
+          # --------------------------------------------------------
+          # Information
+          # --------------------------------------------------------
+
+          ZIP_SIZE=$(
+            du -h "$ZIP_PATH" \
+            | cut -f1
+          )
+
+          ZIP_SHA256=$(
+            sha256sum "$ZIP_PATH" \
+            | awk '{print $1}'
+          )
+
+          COMPILER_VERSION=$(
+            "$CLANG_DIR/bin/clang" \
+              --version \
+              | head -n1
+          )
+
+          BUILD_END=$(date +%s)
+
+          BUILD_START="${{ steps.timer.outputs.start }}"
+
+          BUILD_DURATION=$(
+            (
+              BUILD_END - BUILD_START
+            )
+          )
+
+          BUILD_MIN=$(
+            (
+              BUILD_DURATION / 60
+            )
+          )
+
+          BUILD_SEC=$(
+            (
+              BUILD_DURATION % 60
+            )
+          )
+
+          # --------------------------------------------------------
+          # Outputs
+          # --------------------------------------------------------
+
+          echo "kernel_name=$KERNEL_NAME" >> "$GITHUB_OUTPUT"
+          echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
+          echo "zip_path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+          echo "zip_size=$ZIP_SIZE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$ZIP_SHA256" >> "$GITHUB_OUTPUT"
+          echo "compiler=$COMPILER_VERSION" >> "$GITHUB_OUTPUT"
+          echo "duration=${BUILD_MIN}m ${BUILD_SEC}s" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "=============================================="
+          echo "               BUILD SUCCESS"
+          echo "=============================================="
+          echo "Kernel   : $KERNEL_NAME"
+          echo "Device   : $DEVICE_CODENAME"
+          echo "Repo     : $SOURCE_REPOSITORY"
+          echo "Branch   : $SOURCE_BRANCH"
+          echo "Commit   : ${{ steps.source.outputs.short_sha }}"
+          echo "ZIP      : $ZIP_NAME"
+          echo "Size     : $ZIP_SIZE"
+          echo "Time     : ${BUILD_MIN}m ${BUILD_SEC}s"
+          echo "Compiler : $COMPILER_VERSION"
+          echo "SHA256   : $ZIP_SHA256"
+          echo "=============================================="
+
+      # ============================================================
+      # Release notes
+      # ============================================================
+
+      - name: Create Release Notes
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/release-notes.md" <<EOF
+          ## ${{ steps.package.outputs.kernel_name }}
+
+          Automated kernel build for **${SOURCE_REPOSITORY}**.
+
+          ### Source
+
+          | Information | Value |
+          |---|---|
+          | Device | \`${DEVICE_CODENAME}\` |
+          | Repository | \`${SOURCE_REPOSITORY}\` |
+          | Branch | \`${SOURCE_BRANCH}\` |
+          | Commit | \`${{ steps.source.outputs.sha }}\` |
+          | Defconfig | \`${CONFIG_NAME}\` |
+          | Kernel Version | \`4.19.325\` |
+
+          ### Toolchain
+
+          \`\`\`text
+          ${{ steps.package.outputs.compiler }}
+          \`\`\`
+
+          AOSP Clang:
+
+          \`\`\`text
+          clang-r547379
+          LLVM 20
+          \`\`\`
+
+          ### Build
+
+          | Information | Value |
+          |---|---|
+          | GitHub Run | \`#${GITHUB_RUN_NUMBER}\` |
+          | Run Attempt | \`${GITHUB_RUN_ATTEMPT}\` |
+          | Build Time | \`${{ steps.package.outputs.duration }}\` |
+          | ZIP | \`${{ steps.package.outputs.zip_name }}\` |
+          | ZIP Size | \`${{ steps.package.outputs.zip_size }}\` |
+
+          ### SHA256
+
+          \`\`\`text
+          ${{ steps.package.outputs.sha256 }}
+          \`\`\`
+
+          ### AnyKernel3
+
+          Flashable package contains:
+
+          - \`Image.gz\`
+          - \`mt6768.dtb\` as \`dtb\`
+          - AnyKernel3 installer
+
+          AnyKernel source:
+
+          \`\`\`text
+          ${ANYKERNEL_REPO}:${ANYKERNEL_BRANCH}
+          \`\`\`
+
+          ---
+          Built automatically using GitHub Actions.
+          EOF
+
+      # ============================================================
+      # Publish GitHub Release
+      # ============================================================
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SAFE_BRANCH="${{ steps.source.outputs.safe_branch }}"
+
+          TAG_NAME="gale-${SAFE_BRANCH}-${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+
+          RELEASE_TITLE="${{ steps.package.outputs.kernel_name }} | ${SOURCE_BRANCH} | Build #${GITHUB_RUN_NUMBER}"
+
+          echo "=============================================="
+          echo "             CREATING RELEASE"
+          echo "=============================================="
+          echo "Release repo : $GITHUB_REPOSITORY"
+          echo "Tag          : $TAG_NAME"
+          echo "Title        : $RELEASE_TITLE"
+          echo "ZIP          : ${{ steps.package.outputs.zip_name }}"
+          echo "=============================================="
+
+          gh release create \
+            "$TAG_NAME" \
+            "${{ steps.package.outputs.zip_path }}" \
+            "$OUT_DIR/compile.log" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TITLE" \
+            --notes-file "$GITHUB_WORKSPACE/release-notes.md" \
+            --latest
+
+      # ============================================================
+      # Summary
+      # ============================================================
+
+      - name: GitHub Actions Summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "# ✅ Kernel Build Successful"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Kernel | \`${{ steps.package.outputs.kernel_name }}\` |"
+            echo "| Device | \`$DEVICE_CODENAME\` |"
+            echo "| Repository | \`$SOURCE_REPOSITORY\` |"
+            echo "| Branch | \`$SOURCE_BRANCH\` |"
+            echo "| Commit | \`${{ steps.source.outputs.short_sha }}\` |"
+            echo "| Defconfig | \`$CONFIG_NAME\` |"
+            echo "| Toolchain | \`AOSP Clang r547379 / LLVM 20\` |"
+            echo "| ZIP | \`${{ steps.package.outputs.zip_name }}\` |"
+            echo "| Size | \`${{ steps.package.outputs.zip_size }}\` |"
+            echo "| Build Time | \`${{ steps.package.outputs.duration }}\` |"
+            echo ""
+            echo "## SHA256"
+            echo ""
+            echo "\`\`\`"
+            echo "${{ steps.package.outputs.sha256 }}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ============================================================
+      # Failure log
+      #
+      # Kalau compile gagal, Release memang tidak dibuat.
+      # compile.log tetap bisa di-download dari Actions Artifacts.
+      # ============================================================
+
+      - name: Upload Failed Build Log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Gale-Build-Failed-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.OUT_DIR }}/compile.log
+            ${{ env.OUT_DIR }}/.config
+          if-no-files-found: ignore
+          retention-days: 7
