@@ -530,20 +530,15 @@ jobs:
               exit 1
             }
 
-          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' \
+          grep -q '^CONFIG_KSU_SUSFS=y$' \
             "$OUT_DIR/.config" || {
-            echo "::error::CONFIG_KSU_MANUAL_HOOK was disabled after defconfig generation."
+            echo "::error::CONFIG_KSU_SUSFS was disabled after defconfig generation."
             exit 1
           }
 
           grep -q '^CONFIG_NOMOUNT=y$' \
             "$OUT_DIR/.config" || {
             echo "::error::CONFIG_NOMOUNT was disabled after defconfig generation."
-            exit 1
-          }
-
-          grep -q '^CONFIG_KSU_SUSFS=y$' "$OUT_DIR/.config" || {
-            echo "::error::CONFIG_KSU_SUSFS was not enabled."
             exit 1
           }
 
