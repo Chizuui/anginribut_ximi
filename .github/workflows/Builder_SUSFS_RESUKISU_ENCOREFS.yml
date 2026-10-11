@@ -24,7 +24,7 @@ on:
       resukisu_ref:
         description: "ReSukiSU branch / tag / commit"
         required: true
-        default: "v4.2.0-rc2"
+        default: "main"
         type: string
 
 permissions:
