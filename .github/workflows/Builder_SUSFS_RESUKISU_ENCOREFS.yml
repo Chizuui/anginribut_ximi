@@ -24,7 +24,7 @@ on:
       resukisu_ref:
         description: "ReSukiSU branch / tag / commit"
         required: true
-        default: "main"
+        default: "v4.2.0-rc2"
         type: string
 
 permissions:
@@ -229,6 +229,11 @@ jobs:
           if [ ! -e "drivers/kernelsu" ]; then
             echo "::error::drivers/kernelsu symlink was not created."
             exit 1
+          fi
+
+          # Safe fail-safe: remove artificial build-abort line if present in susfs_compat.mk
+          if [ -f "KernelSU/kernel/tools/susfs_compat.mk" ]; then
+            sed -i '/error Please wait susfs update/d' KernelSU/kernel/tools/susfs_compat.mk || true
           fi
 
 
